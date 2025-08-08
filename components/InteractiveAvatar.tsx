@@ -23,7 +23,6 @@ import { StreamingAvatarProvider, StreamingAvatarSessionState } from "./logic";
 import { LoadingIcon } from "./Icons";
 import { MessageHistory } from "./AvatarSession/MessageHistory";
 import { AVATARS } from "@/app/lib/constants";
-import { IceTransportPolicy } from "@heygen/streaming-avatar";
 
 /* ---------- DEFAULT CONFIG ---------- */
 const DEFAULT_CONFIG: StartAvatarRequest = {

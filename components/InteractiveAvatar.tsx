@@ -8,7 +8,6 @@ import {
   StartAvatarRequest,
   STTProvider,
   ElevenLabsModel,
-  IceTransportPolicy,
 } from "@heygen/streaming-avatar";
 import { useEffect, useRef, useState } from "react";
 import { useMemoizedFn, useUnmount } from "ahooks";
@@ -36,7 +35,7 @@ const DEFAULT_CONFIG: StartAvatarRequest = {
   },
   language: "en",
   activityIdleTimeout: 900,
-  iceTransportPolicy: IceTransportPolicy.RELAY,
+  iceTransportPolicy: "relay",
   turnServer: "turn:global.relay.heygen.com:443?transport=tcp",
   voiceChatTransport: VoiceChatTransport.WEBSOCKET,
   sttSettings: { provider: STTProvider.DEEPGRAM },

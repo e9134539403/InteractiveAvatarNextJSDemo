@@ -8,6 +8,7 @@ import {
   StartAvatarRequest,
   STTProvider,
   ElevenLabsModel,
+  IceTransportPolicy,
 } from "@heygen/streaming-avatar";
 import { useEffect, useRef, useState } from "react";
 import { useMemoizedFn, useUnmount } from "ahooks";
@@ -22,6 +23,7 @@ import { StreamingAvatarProvider, StreamingAvatarSessionState } from "./logic";
 import { LoadingIcon } from "./Icons";
 import { MessageHistory } from "./AvatarSession/MessageHistory";
 import { AVATARS } from "@/app/lib/constants";
+import { IceTransportPolicy } from "@heygen/streaming-avatar";
 
 /* ---------- DEFAULT CONFIG ---------- */
 const DEFAULT_CONFIG: StartAvatarRequest = {
@@ -35,6 +37,8 @@ const DEFAULT_CONFIG: StartAvatarRequest = {
   },
   language: "en",
   activityIdleTimeout: 900,
+  iceTransportPolicy: IceTransportPolicy.RELAY,
+  turnServer: "turn:global.relay.heygen.com:443?transport=tcp",
   voiceChatTransport: VoiceChatTransport.WEBSOCKET,
   sttSettings: { provider: STTProvider.DEEPGRAM },
 };

@@ -8,7 +8,6 @@ import {
   StartAvatarRequest,
   STTProvider,
   ElevenLabsModel,
-  IceTransportPolicy,
 } from "@heygen/streaming-avatar";
 import { useEffect, useRef, useState } from "react";
 import { useMemoizedFn, useUnmount } from "ahooks";

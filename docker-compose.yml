@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  heygen-avatar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - HEYGEN_API_KEY=${HEYGEN_API_KEY}
+      - NEXT_PUBLIC_BASE_API_URL=https://api.heygen.com
+    restart: unless-stopped

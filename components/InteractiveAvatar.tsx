@@ -107,6 +107,16 @@ const extendedConfig = {
 
 await startAvatar(extendedConfig);
 
+      // Поддержание сессии активной каждые 5 минут
+const keepAliveInterval = setInterval(() => {
+  if (avatar && avatar.keepAlive) {
+    avatar.keepAlive();
+  }
+}, 300000); // 5 минут
+
+// Сохраняем интервал для очистки
+(window as any).keepAliveInterval = keepAliveInterval;
+      
       if (isVoiceChat) {
         await startVoiceChat();
       }

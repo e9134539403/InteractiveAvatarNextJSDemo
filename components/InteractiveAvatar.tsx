@@ -99,7 +99,13 @@ function InteractiveAvatar() {
         console.log(">>>>> Avatar end message:", event);
       });
 
-      await startAvatar(config);
+     // Добавляем часовой таймаут в конфиг
+const extendedConfig = {
+  ...config,
+  activityIdleTimeout: 7200 // 2 часа максимум
+};
+
+await startAvatar(extendedConfig);
 
       if (isVoiceChat) {
         await startVoiceChat();

@@ -102,7 +102,7 @@ function InteractiveAvatar() {
      // Добавляем часовой таймаут в конфиг
 const extendedConfig = {
   ...config,
-  activityIdleTimeout: 7200 // 2 часа максимум
+  activityIdleTimeout: 3600 // 1 час максимум
 };
 
 await startAvatar(extendedConfig);
@@ -126,6 +126,11 @@ const keepAliveInterval = setInterval(() => {
   });
 
   useUnmount(() => {
+      // Очищаем keepAlive интервал
+  if ((window as any).keepAliveInterval) {
+    clearInterval((window as any).keepAliveInterval);
+    (window as any).keepAliveInterval = null;
+  }
     stopAvatar();
   });
 

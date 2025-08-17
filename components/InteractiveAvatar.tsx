@@ -224,7 +224,7 @@ function InteractiveAvatar() {
 
         await startAvatar({
           ...configRef.current,
-          activityIdleTimeout: 3600,
+          activityIdleTimeout: 3200,
         });
 
         if (isVoiceChatRef.current && isHealthy()) {

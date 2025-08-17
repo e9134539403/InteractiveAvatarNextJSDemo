@@ -48,7 +48,7 @@ function InteractiveAvatar() {
   /* ---------- CONFIG STATE ---------- */
   const [config, setConfig] = useState<StartAvatarRequest>(DEFAULT_CONFIG);
 
-  /* always-fresh config reference (избегаем устаревшего замыкания) */
+  // свежий config вне замыканий
   const configRef = useRef(config);
   useEffect(() => {
     configRef.current = config;
@@ -64,24 +64,18 @@ function InteractiveAvatar() {
     timer: undefined,
   });
 
-  /* текущее «здоровое» состояние сессии */
+  // «здоровая» сессия
   const isHealthy = useMemoizedFn(
     () => sessionState === StreamingAvatarSessionState.CONNECTED
   );
 
   /* ---------- TOKEN FETCH ---------- */
   async function fetchAccessToken() {
-    try {
-      const response = await fetch("/api/get-access-token", {
-        method: "POST",
-      });
-      const token = await response.text();
-      console.log("Access Token:", token);
-      return token;
-    } catch (error) {
-      console.error("Error fetching access token:", error);
-      throw error;
-    }
+    const response = await fetch("/api/get-access-token", { method: "POST" });
+    if (!response.ok) throw new Error("Failed to fetch access token");
+    const token = await response.text();
+    console.log("Access Token:", token);
+    return token;
   }
 
   /* ---------- SOFT RESTART (перевешиваем треки / STT) ---------- */
@@ -95,7 +89,7 @@ function InteractiveAvatar() {
     }
   });
 
-  /* ---------- HARD RESET with backoff (полное пересоздание) ---------- */
+  /* ---------- HARD RESET with backoff ---------- */
   const hardResetWithBackoff = useMemoizedFn(async (reason: string) => {
     if (reconnectRef.current.timer) return; // уже запланирован
     const attempt = reconnectRef.current.attempts;
@@ -110,7 +104,7 @@ function InteractiveAvatar() {
         console.warn(`🔁 HARD reset: ${reason}, attempt=${attempt}`);
         await stopAvatar();
         avatarRef.current = null;
-        await new Promise((r) => setTimeout(r, 600)); // дать сокетам закрыться
+        await new Promise((r) => setTimeout(r, 600));
 
         const token = await fetchAccessToken();
         const newAvatar = initAvatar(token);
@@ -126,7 +120,7 @@ function InteractiveAvatar() {
         if (isVoiceChatRef.current && isHealthy()) {
           await startVoiceChat();
         }
-        reconnectRef.current.attempts = 0; // успех — обнуляем счётчик
+        reconnectRef.current.attempts = 0; // успех
         console.info("✅ HARD reset done");
       } catch (e) {
         console.error("hard reset failed, will retry", e);
@@ -135,7 +129,7 @@ function InteractiveAvatar() {
     }, delay);
   });
 
-  /* ---------- AVATAR EVENT HANDLERS (единая точка навешивания) ---------- */
+  /* ---------- AVATAR EVENT HANDLERS ---------- */
   const setupAvatarEventHandlers = useMemoizedFn((avatar: any) => {
     if (!avatar) return;
 
@@ -216,9 +210,7 @@ function InteractiveAvatar() {
   useEffect(() => {
     const TEN_MIN = 10 * 60 * 1000;
     const id = window.setInterval(async () => {
-      // если офлайн или нет активной сессии — пропускаем
       if (!navigator.onLine || !avatarRef.current) return;
-
       try {
         console.info("♻️ Silent recycle started");
         await stopAvatar();
@@ -241,14 +233,13 @@ function InteractiveAvatar() {
         console.info("✅ Silent recycle done");
       } catch (e) {
         console.error("♻️ Recycle failed", e);
-        // если регулярный рецикл провалился — эскалируем
         hardResetWithBackoff("recycle failed");
       }
     }, TEN_MIN);
 
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // таймер один на жизнь компонента
+  }, []);
 
   /* ---------- ONLINE / OFFLINE ---------- */
   useEffect(() => {
@@ -260,3 +251,69 @@ function InteractiveAvatar() {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
     };
+  }, [hardResetWithBackoff]);
+
+  /* ---------- CLEANUP ON UNMOUNT ---------- */
+  useUnmount(() => {
+    if (keepAliveIntervalRef.current != null) {
+      clearInterval(keepAliveIntervalRef.current);
+      keepAliveIntervalRef.current = null;
+    }
+    if (reconnectRef.current.timer) {
+      clearTimeout(reconnectRef.current.timer);
+      reconnectRef.current.timer = undefined;
+    }
+    reconnectRef.current.attempts = 0;
+    avatarRef.current = null;
+    stopAvatar();
+  });
+
+  /* ---------- ATTACH MEDIA STREAM ---------- */
+  useEffect(() => {
+    if (stream && mediaStream.current) {
+      mediaStream.current.srcObject = stream as any;
+      mediaStream.current.onloadedmetadata = () => {
+        mediaStream.current!.play();
+      };
+    }
+  }, [stream]);
+
+  /* ---------------- RENDER ---------------- */
+  return (
+    <div className="w-full flex flex-col gap-4">
+      <div className="flex flex-col rounded-xl bg-zinc-900 overflow-hidden">
+        {/* Video / Config switch */}
+        <div className="relative w-full aspect-video overflow-hidden flex flex-col items-center justify-center">
+          {sessionState !== StreamingAvatarSessionState.INACTIVE ? (
+            <AvatarVideo ref={mediaStream} />
+          ) : (
+            <AvatarConfig config={config} onConfigChange={setConfig} />
+          )}
+        </div>
+        {/* Controls */}
+        <div className="flex flex-col gap-3 items-center justify-center p-4 border-t border-zinc-700 w-full">
+          {sessionState === StreamingAvatarSessionState.CONNECTED ? (
+            <AvatarControls />
+          ) : sessionState === StreamingAvatarSessionState.INACTIVE ? (
+            <div className="flex flex-row gap-4">
+              <Button onClick={() => startSessionV2(true)}>Start Voice Chat</Button>
+              <Button onClick={() => startSessionV2(false)}>Start Text Chat</Button>
+            </div>
+          ) : (
+            <LoadingIcon />
+          )}
+        </div>
+      </div>
+      {sessionState === StreamingAvatarSessionState.CONNECTED && <MessageHistory />}
+    </div>
+  );
+}
+
+/* ---------- PROVIDER WRAPPER ---------- */
+export default function InteractiveAvatarWrapper() {
+  return (
+    <StreamingAvatarProvider basePath={process.env.NEXT_PUBLIC_BASE_API_URL}>
+      <InteractiveAvatar />
+    </StreamingAvatarProvider>
+  );
+}

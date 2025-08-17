@@ -1,85 +1,186 @@
-"use client";
-
-import { useRef, useState, useCallback, useEffect } from "react";
-import StreamingAvatar, {
+import {
   AvatarQuality,
   StreamingEvents,
+  VoiceChatTransport,
+  VoiceEmotion,
+  StartAvatarRequest,
+  STTProvider,
+  ElevenLabsModel,
 } from "@heygen/streaming-avatar";
+import { useEffect, useRef, useState } from "react";
+import { useMemoizedFn, useUnmount } from "ahooks";
 
-export default function InteractiveAvatar() {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [sa, setSa] = useState<StreamingAvatar | null>(null);
-  const [running, setRunning] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+import { Button } from "./Button";
+import { AvatarConfig } from "./AvatarConfig";
+import { AvatarVideo } from "./AvatarSession/AvatarVideo";
+import { useStreamingAvatarSession } from "./logic/useStreamingAvatarSession";
+import { AvatarControls } from "./AvatarSession/AvatarControls";
+import { useVoiceChat } from "./logic/useVoiceChat";
+import { StreamingAvatarProvider, StreamingAvatarSessionState } from "./logic";
+import { LoadingIcon } from "./Icons";
+import { MessageHistory } from "./AvatarSession/MessageHistory";
 
-  const start = useCallback(async () => {
+import { AVATARS } from "@/app/lib/constants";
+
+const DEFAULT_CONFIG: StartAvatarRequest = {
+  quality: AvatarQuality.Low,
+  avatarName: AVATARS[0].avatar_id,
+  knowledgeId: undefined,
+  voice: {
+    rate: 1.5,
+    emotion: VoiceEmotion.EXCITED,
+    model: ElevenLabsModel.eleven_flash_v2_5,
+  },
+  language: "en",
+  voiceChatTransport: VoiceChatTransport.WEBSOCKET,
+  sttSettings: {
+    provider: STTProvider.DEEPGRAM,
+  },
+};
+
+function InteractiveAvatar() {
+  const { initAvatar, startAvatar, stopAvatar, sessionState, stream } =
+    useStreamingAvatarSession();
+  const { startVoiceChat } = useVoiceChat();
+
+  const [config, setConfig] = useState<StartAvatarRequest>(DEFAULT_CONFIG);
+
+  const mediaStream = useRef<HTMLVideoElement>(null);
+
+  async function fetchAccessToken() {
     try {
-      setErr(null);
-      // 1) берём одноразовый session token с сервера
-      const res = await fetch("/api/get-access-token", { method: "POST", cache: "no-store" });
-      if (!res.ok) throw new Error(`Token fetch failed: ${res.status}`);
-      const { token } = await res.json();
-
-      // 2) создаём клиента SDK по токену (БЕЗ ручных вызовов streaming.new/start)
-      const client = new StreamingAvatar({ token });
-
-      // события (по желанию)
-      client.on(StreamingEvents.STREAM_READY, async () => {
-        const ms = await client.getMediaStream?.();
-        if (videoRef.current && ms) {
-          // подключаем медиапоток к <video>
-          videoRef.current.srcObject = ms as MediaStream;
-          await videoRef.current.play().catch(() => {});
-        }
+      const response = await fetch("/api/get-access-token", {
+        method: "POST",
       });
-      client.on(StreamingEvents.STREAM_DISCONNECTED, () => setRunning(false));
+      const token = await response.text();
 
-      // 3) стартуем аватара
-      await client.createStartAvatar({
-        quality: AvatarQuality.Medium,
-        // можно задать avatarName / voiceId / background, если нужно:
-        // avatarName: "laya",
-        // voiceId: "jenny",
-      });
+      console.log("Access Token:", token); // Log the token to verify
 
-      setSa(client);
-      setRunning(true);
-    } catch (e: any) {
-      setErr(e?.message || "Failed to start avatar");
-      console.error(e);
+      return token;
+    } catch (error) {
+      console.error("Error fetching access token:", error);
+      throw error;
     }
-  }, []);
+  }
 
-  const stop = useCallback(async () => {
-    try { await sa?.stopAvatar?.(); } catch {}
-    setRunning(false);
-  }, [sa]);
+  const startSessionV2 = useMemoizedFn(async (isVoiceChat: boolean) => {
+    try {
+      const newToken = await fetchAccessToken();
+      const avatar = initAvatar(newToken);
+
+      avatar.on(StreamingEvents.AVATAR_START_TALKING, (e) => {
+        console.log("Avatar started talking", e);
+      });
+      avatar.on(StreamingEvents.AVATAR_STOP_TALKING, (e) => {
+        console.log("Avatar stopped talking", e);
+      });
+      avatar.on(StreamingEvents.STREAM_DISCONNECTED, () => {
+        console.log("Stream disconnected");
+      });
+      avatar.on(StreamingEvents.STREAM_READY, (event) => {
+        console.log(">>>>> Stream ready:", event.detail);
+      });
+      avatar.on(StreamingEvents.USER_START, (event) => {
+        console.log(">>>>> User started talking:", event);
+      });
+      avatar.on(StreamingEvents.USER_STOP, (event) => {
+        console.log(">>>>> User stopped talking:", event);
+      });
+      avatar.on(StreamingEvents.USER_END_MESSAGE, (event) => {
+        console.log(">>>>> User end message:", event);
+      });
+      avatar.on(StreamingEvents.USER_TALKING_MESSAGE, (event) => {
+        console.log(">>>>> User talking message:", event);
+      });
+      avatar.on(StreamingEvents.AVATAR_TALKING_MESSAGE, (event) => {
+        console.log(">>>>> Avatar talking message:", event);
+      });
+      avatar.on(StreamingEvents.AVATAR_END_MESSAGE, (event) => {
+        console.log(">>>>> Avatar end message:", event);
+      });
+
+     // Добавляем часовой таймаут в конфиг
+const extendedConfig = {
+  ...config,
+  activityIdleTimeout: 3600 // 1 час максимум
+};
+
+await startAvatar(extendedConfig);
+
+      // Поддержание сессии активной каждые 5 минут
+const keepAliveInterval = setInterval(() => {
+  if (avatar && avatar.keepAlive) {
+    avatar.keepAlive();
+  }
+}, 300000); // 5 минут
+
+// Сохраняем интервал для очистки
+(window as any).keepAliveInterval = keepAliveInterval;
+      
+      if (isVoiceChat) {
+        await startVoiceChat();
+      }
+    } catch (error) {
+      console.error("Error starting avatar session:", error);
+    }
+  });
+
+  useUnmount(() => {
+      // Очищаем keepAlive интервал
+  if ((window as any).keepAliveInterval) {
+    clearInterval((window as any).keepAliveInterval);
+    (window as any).keepAliveInterval = null;
+  }
+    stopAvatar();
+  });
 
   useEffect(() => {
-    return () => { sa?.stopAvatar?.().catch(() => {}); };
-  }, [sa]);
+    if (stream && mediaStream.current) {
+      mediaStream.current.srcObject = stream;
+      mediaStream.current.onloadedmetadata = () => {
+        mediaStream.current!.play();
+      };
+    }
+  }, [mediaStream, stream]);
 
   return (
-    <div className="flex flex-col gap-3">
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        className="w-full aspect-video bg-black rounded"
-      />
-      <div className="flex gap-2">
-        {!running ? (
-          <button onClick={start} className="px-4 py-2 rounded bg-black text-white">
-            Start Avatar
-          </button>
-        ) : (
-          <button onClick={stop} className="px-4 py-2 rounded bg-gray-200">
-            Stop
-          </button>
-        )}
+    <div className="w-full flex flex-col gap-4">
+      <div className="flex flex-col rounded-xl bg-zinc-900 overflow-hidden">
+        <div className="relative w-full aspect-video overflow-hidden flex flex-col items-center justify-center">
+          {sessionState !== StreamingAvatarSessionState.INACTIVE ? (
+            <AvatarVideo ref={mediaStream} />
+          ) : (
+            <AvatarConfig config={config} onConfigChange={setConfig} />
+          )}
+        </div>
+        <div className="flex flex-col gap-3 items-center justify-center p-4 border-t border-zinc-700 w-full">
+          {sessionState === StreamingAvatarSessionState.CONNECTED ? (
+            <AvatarControls />
+          ) : sessionState === StreamingAvatarSessionState.INACTIVE ? (
+            <div className="flex flex-row gap-4">
+              <Button onClick={() => startSessionV2(true)}>
+                Start Voice Chat
+              </Button>
+              <Button onClick={() => startSessionV2(false)}>
+                Start Text Chat
+              </Button>
+            </div>
+          ) : (
+            <LoadingIcon />
+          )}
+        </div>
       </div>
-      {err && <div className="text-red-600 text-sm">{err}</div>}
+      {sessionState === StreamingAvatarSessionState.CONNECTED && (
+        <MessageHistory />
+      )}
     </div>
+  );
+}
+
+export default function InteractiveAvatarWrapper() {
+  return (
+    <StreamingAvatarProvider basePath={process.env.NEXT_PUBLIC_BASE_API_URL}>
+      <InteractiveAvatar />
+    </StreamingAvatarProvider>
   );
 }

@@ -31,7 +31,7 @@ const DEFAULT_CONFIG: StartAvatarRequest = {
     model: ElevenLabsModel.eleven_flash_v2_5,
   },
   language: "en",
-  activityIdleTimeout: 3600, // 1 час максимум
+  activityIdleTimeout: 3600,
   voiceChatTransport: VoiceChatTransport.WEBSOCKET,
   sttSettings: { 
     provider: STTProvider.DEEPGRAM,
@@ -42,9 +42,11 @@ const DEFAULT_CONFIG: StartAvatarRequest = {
 function InteractiveAvatar() {
   const { initAvatar, startAvatar, stopAvatar, sessionState, stream } =
     useStreamingAvatarSession();
-  const { startVoiceChat } = useVoiceChat();
+  const { startVoiceChat, stopVoiceChat, isVoiceChatActive } = useVoiceChat();
 
   const [config, setConfig] = useState<StartAvatarRequest>(DEFAULT_CONFIG);
+  const [webSocketErrors, setWebSocketErrors] = useState(0);
+  
   const configRef = useRef(config);
   useEffect(() => {
     configRef.current = config;
@@ -54,6 +56,8 @@ function InteractiveAvatar() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const keepAliveIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const watchdogIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const errorMonitorRef = useRef<NodeJS.Timeout | null>(null);
+  const lastWebSocketErrorRef = useRef<number>(0);
 
   // Получение токена
   const fetchAccessToken = async () => {
@@ -67,6 +71,30 @@ function InteractiveAvatar() {
     }
   };
 
+  // Перезапуск только voice chat (для WebSocket ошибок)
+  const restartVoiceChat = useMemoizedFn(async () => {
+    if (sessionState !== StreamingAvatarSessionState.CONNECTED) return false;
+    
+    console.log("🎤 Restarting voice chat due to WebSocket error...");
+    try {
+      // Сначала останавливаем voice chat
+      if (isVoiceChatActive) {
+        await stopVoiceChat();
+        await new Promise(r => setTimeout(r, 500)); // Небольшая пауза
+      }
+      
+      // Затем запускаем заново
+      await startVoiceChat();
+      
+      console.log("✅ Voice chat restarted successfully");
+      setWebSocketErrors(0); // Сбрасываем счетчик ошибок
+      return true;
+    } catch (error: any) {
+      console.error("❌ Voice chat restart failed:", error);
+      return false;
+    }
+  });
+
   // Мягкий перезапуск медиа-потоков
   const softRestartTracks = useMemoizedFn(async () => {
     if (sessionState !== StreamingAvatarSessionState.CONNECTED) return;
@@ -75,14 +103,14 @@ function InteractiveAvatar() {
     try {
       await startVoiceChat();
       console.log("✅ Soft restart tracks completed successfully");
+      setWebSocketErrors(0);
     } catch (e: any) {
       const msg = e?.message || "";
-      // HeyGen возвращает 400 если уже слушает, 401 если токен устарел
       if (msg.includes("400") || msg.includes("already")) {
         console.warn("⚠️ Soft restart: already listening (benign error)");
       } else if (msg.includes("401")) {
         console.warn("⚠️ Token expired, need full restart");
-        throw e; // Пробрасываем для hard reset
+        throw e;
       } else {
         console.error("❌ Soft restart failed:", e);
         throw e;
@@ -95,51 +123,57 @@ function InteractiveAvatar() {
     console.warn("🔴 Initiating HARD RESET of avatar session...");
     
     try {
-      // Останавливаем текущую сессию
       await stopAvatar();
       
-      // Очищаем интервалы
       if (keepAliveIntervalRef.current) {
         clearInterval(keepAliveIntervalRef.current);
         keepAliveIntervalRef.current = null;
       }
       
-      // Ждем немного перед перезапуском
       await new Promise(r => setTimeout(r, 1000));
       
-      // Получаем новый токен и создаем новую сессию
       const token = await fetchAccessToken();
       const avatar = initAvatar(token);
       
-      // Подписываемся на события
-      avatar.on(StreamingEvents.STREAM_DISCONNECTED, () => {
-        console.warn("📡 Stream disconnected, attempting recovery...");
-        softRestartTracks();
-      });
+      setupEventListeners(avatar);
       
-      avatar.on(StreamingEvents.STREAM_READY, () => {
-        console.log("✅ Stream ready after hard reset");
-      });
-      
-      // Запускаем аватар с конфигом
       await startAvatar(configRef.current);
       
-      // Восстанавливаем voice chat если был активен
       if (isVoiceChatRef.current) {
         await startVoiceChat();
       }
       
-      // Восстанавливаем keepAlive
       setupKeepAlive(avatar);
+      setWebSocketErrors(0);
       
       console.log("✅ Hard reset completed successfully");
     } catch (error) {
       console.error("❌ Hard reset failed:", error);
-      // Можно добавить UI уведомление об ошибке
     }
   });
 
-  // Настройка keepAlive для поддержания сессии
+  // Настройка обработчиков событий
+  const setupEventListeners = (avatar: any) => {
+    avatar.on(StreamingEvents.STREAM_DISCONNECTED, () => {
+      console.warn("📡 Stream disconnected, attempting recovery...");
+      softRestartTracks();
+    });
+    
+    avatar.on(StreamingEvents.AVATAR_START_TALKING, (e) => {
+      console.log("🗣️ Avatar started talking", e);
+    });
+    
+    avatar.on(StreamingEvents.AVATAR_STOP_TALKING, (e) => {
+      console.log("🤐 Avatar stopped talking", e);
+    });
+    
+    avatar.on(StreamingEvents.STREAM_READY, (event) => {
+      console.log("✅ Stream ready:", event.detail);
+      setWebSocketErrors(0);
+    });
+  };
+
+  // Настройка keepAlive
   const setupKeepAlive = (avatar: any) => {
     if (keepAliveIntervalRef.current) {
       clearInterval(keepAliveIntervalRef.current);
@@ -150,7 +184,7 @@ function InteractiveAvatar() {
         avatar.keepAlive();
         console.log("💓 Keep-alive signal sent");
       }
-    }, 300000); // каждые 5 минут
+    }, 300000);
   };
 
   // Запуск сессии
@@ -161,31 +195,12 @@ function InteractiveAvatar() {
       const token = await fetchAccessToken();
       const avatar = initAvatar(token);
       
-      // Подписываемся на события
-      avatar.on(StreamingEvents.STREAM_DISCONNECTED, () => {
-        console.warn("📡 Stream disconnected, attempting recovery...");
-        softRestartTracks();
-      });
+      setupEventListeners(avatar);
       
-      avatar.on(StreamingEvents.AVATAR_START_TALKING, (e) => {
-        console.log("🗣️ Avatar started talking", e);
-      });
-      
-      avatar.on(StreamingEvents.AVATAR_STOP_TALKING, (e) => {
-        console.log("🤐 Avatar stopped talking", e);
-      });
-      
-      avatar.on(StreamingEvents.STREAM_READY, (event) => {
-        console.log("✅ Stream ready:", event.detail);
-      });
-
-      // Запускаем аватар
       await startAvatar(configRef.current);
       
-      // Настраиваем keepAlive
       setupKeepAlive(avatar);
       
-      // Запускаем voice chat если нужно
       if (needVoice) {
         await startVoiceChat();
         isVoiceChatRef.current = true;
@@ -197,6 +212,84 @@ function InteractiveAvatar() {
     }
   });
 
+  // Мониторинг WebSocket ошибок в консоли
+  useEffect(() => {
+    const originalError = console.error;
+    
+    console.error = function(...args) {
+      const errorMessage = args.join(' ');
+      
+      // Проверяем на WebSocket ошибки
+      if (errorMessage.includes('WebSocket is already in CLOSING') || 
+          errorMessage.includes('WebSocket is already in CLOSED')) {
+        
+        const now = Date.now();
+        // Если прошло более 5 секунд с последней ошибки, увеличиваем счетчик
+        if (now - lastWebSocketErrorRef.current > 5000) {
+          setWebSocketErrors(prev => {
+            const newCount = prev + 1;
+            console.log(`🔌 WebSocket error detected (count: ${newCount})`);
+            
+            // После 3 ошибок пытаемся восстановить voice chat
+            if (newCount === 3) {
+              console.log("🎤 Multiple WebSocket errors detected, restarting voice chat...");
+              restartVoiceChat().then(success => {
+                if (!success && newCount > 5) {
+                  // Если не удалось восстановить после 5 попыток - делаем soft restart
+                  console.warn("🔄 Voice chat restart failed, attempting soft restart...");
+                  softRestartTracks();
+                }
+              });
+            } else if (newCount > 10) {
+              // После 10 ошибок делаем hard reset
+              console.warn("⚠️ Too many WebSocket errors, initiating hard reset...");
+              hardReset();
+              return 0; // Сброс счетчика будет в hardReset
+            }
+            
+            return newCount;
+          });
+          lastWebSocketErrorRef.current = now;
+        }
+      }
+      
+      // Вызываем оригинальный console.error
+      originalError.apply(console, args);
+    };
+    
+    // Восстанавливаем оригинальный console.error при размонтировании
+    return () => {
+      console.error = originalError;
+    };
+  }, [restartVoiceChat, softRestartTracks, hardReset]);
+
+  // Периодическая проверка состояния WebSocket
+  useEffect(() => {
+    errorMonitorRef.current = setInterval(() => {
+      // Если накопилось много ошибок и прошло время, пробуем восстановить
+      if (webSocketErrors > 0 && sessionState === StreamingAvatarSessionState.CONNECTED) {
+        const timeSinceLastError = Date.now() - lastWebSocketErrorRef.current;
+        
+        // Если прошло более 30 секунд без новых ошибок, сбрасываем счетчик
+        if (timeSinceLastError > 30000) {
+          console.log("✅ No WebSocket errors for 30s, resetting error counter");
+          setWebSocketErrors(0);
+        }
+        // Если ошибки продолжаются, но voice chat не активен, пробуем запустить
+        else if (timeSinceLastError < 10000 && !isVoiceChatActive && isVoiceChatRef.current) {
+          console.log("🎤 Voice chat inactive but should be active, restarting...");
+          restartVoiceChat();
+        }
+      }
+    }, 15000); // Проверяем каждые 15 секунд
+    
+    return () => {
+      if (errorMonitorRef.current) {
+        clearInterval(errorMonitorRef.current);
+      }
+    };
+  }, [webSocketErrors, sessionState, isVoiceChatActive, restartVoiceChat]);
+
   // Очистка при размонтировании
   useUnmount(() => {
     console.log("🔚 Component unmounting, cleaning up...");
@@ -207,6 +300,10 @@ function InteractiveAvatar() {
     
     if (watchdogIntervalRef.current) {
       clearInterval(watchdogIntervalRef.current);
+    }
+    
+    if (errorMonitorRef.current) {
+      clearInterval(errorMonitorRef.current);
     }
     
     stopAvatar();
@@ -222,17 +319,16 @@ function InteractiveAvatar() {
     }
   }, [stream]);
 
-  // Watchdog для обнаружения зависаний
+  // Watchdog для обнаружения зависаний видео
   useEffect(() => {
     let previousTime = 0;
     let freezeCount = 0;
-    const SOFT_LIMIT = 3; // После 3 мягких перезапусков делаем hard reset
+    const SOFT_LIMIT = 3;
     
     watchdogIntervalRef.current = setInterval(async () => {
       const video = videoRef.current;
       if (!video || sessionState !== StreamingAvatarSessionState.CONNECTED) return;
       
-      // Проверяем движется ли видео
       if (video.currentTime === previousTime) {
         console.warn(`⚠️ Video freeze detected (attempt ${freezeCount + 1}/${SOFT_LIMIT})`);
         
@@ -247,12 +343,10 @@ function InteractiveAvatar() {
           }
         } catch (error) {
           console.error("Error in watchdog recovery:", error);
-          // При критической ошибке делаем hard reset
           await hardReset();
           freezeCount = 0;
         }
       } else {
-        // Видео движется - сбрасываем счетчик
         if (freezeCount > 0) {
           console.log("✅ Video recovered, resetting freeze counter");
           freezeCount = 0;
@@ -260,7 +354,7 @@ function InteractiveAvatar() {
       }
       
       previousTime = video.currentTime;
-    }, 10000); // Проверяем каждые 10 секунд
+    }, 10000);
     
     return () => {
       if (watchdogIntervalRef.current) {
@@ -269,20 +363,39 @@ function InteractiveAvatar() {
     };
   }, [softRestartTracks, hardReset, sessionState]);
 
-  // UI
+  // UI с индикатором состояния WebSocket
   return (
     <div className="w-full flex flex-col gap-4">
       <div className="flex flex-col rounded-xl bg-zinc-900 overflow-hidden">
         <div className="relative w-full aspect-video flex items-center justify-center">
           {sessionState !== StreamingAvatarSessionState.INACTIVE ? (
-            <AvatarVideo ref={videoRef} />
+            <>
+              <AvatarVideo ref={videoRef} />
+              {/* Индикатор WebSocket ошибок */}
+              {webSocketErrors > 0 && (
+                <div className="absolute top-2 right-2 bg-yellow-600 text-white px-2 py-1 rounded text-xs">
+                  ⚠️ Audio issues ({webSocketErrors})
+                </div>
+              )}
+            </>
           ) : (
             <AvatarConfig config={config} onConfigChange={setConfig} />
           )}
         </div>
         <div className="flex flex-col items-center gap-3 p-4 border-t border-zinc-700">
           {sessionState === StreamingAvatarSessionState.CONNECTED ? (
-            <AvatarControls />
+            <>
+              <AvatarControls />
+              {/* Кнопка ручного восстановления микрофона */}
+              {webSocketErrors > 2 && (
+                <Button 
+                  onClick={restartVoiceChat}
+                  className="!bg-yellow-600 text-xs"
+                >
+                  🎤 Fix Microphone
+                </Button>
+              )}
+            </>
           ) : sessionState === StreamingAvatarSessionState.INACTIVE ? (
             <div className="flex gap-4">
               <Button onClick={() => startSession(true)}>Start Voice Chat</Button>

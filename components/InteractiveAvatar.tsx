@@ -45,142 +45,47 @@ function InteractiveAvatar() {
 
   const [config, setConfig] = useState<StartAvatarRequest>(DEFAULT_CONFIG);
 
+  // ---- refs / state for robust reconnects ----
   const mediaStream = useRef<HTMLVideoElement>(null);
+  const avatarRef = useRef<any>(null);
+  const keepAliveIntervalRef = useRef<number | null>(null);
+  const isVoiceChatRef = useRef<boolean>(false);
+
+  // актуальный config вне замыканий
+  const configRef = useRef<StartAvatarRequest>(DEFAULT_CONFIG);
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
+  // реконнекты/грейс-окна
+  const reconnectRef = useRef<{
+    attempts: number;
+    timer: number | undefined;
+    graceTimer: number | undefined;
+  }>({ attempts: 0, timer: undefined, graceTimer: undefined });
+
+  // single-flight замки
+  const startInFlight = useRef(false);
+  const stopInFlight = useRef(false);
+  const resetInFlight = useRef(false);
+
+  // пауза/возобновление голосового пайплайна
+  const voicePausedRef = useRef(false);
+  const voiceStartInFlight = useRef(false);
+
+  // «здоровая» сессия
+  const isHealthy = useMemoizedFn(
+    () => sessionState === StreamingAvatarSessionState.CONNECTED
+  );
 
   async function fetchAccessToken() {
     try {
-      const response = await fetch("/api/get-access-token", {
-        method: "POST",
-      });
+      const response = await fetch("/api/get-access-token", { method: "POST" });
       const token = await response.text();
-
-      console.log("Access Token:", token); // Log the token to verify
-
+      console.log("Access Token:", token);
       return token;
     } catch (error) {
       console.error("Error fetching access token:", error);
       throw error;
     }
   }
-
-  const startSessionV2 = useMemoizedFn(async (isVoiceChat: boolean) => {
-    try {
-      const newToken = await fetchAccessToken();
-      const avatar = initAvatar(newToken);
-
-      avatar.on(StreamingEvents.AVATAR_START_TALKING, (e) => {
-        console.log("Avatar started talking", e);
-      });
-      avatar.on(StreamingEvents.AVATAR_STOP_TALKING, (e) => {
-        console.log("Avatar stopped talking", e);
-      });
-      avatar.on(StreamingEvents.STREAM_DISCONNECTED, () => {
-        console.log("Stream disconnected");
-      });
-      avatar.on(StreamingEvents.STREAM_READY, (event) => {
-        console.log(">>>>> Stream ready:", event.detail);
-      });
-      avatar.on(StreamingEvents.USER_START, (event) => {
-        console.log(">>>>> User started talking:", event);
-      });
-      avatar.on(StreamingEvents.USER_STOP, (event) => {
-        console.log(">>>>> User stopped talking:", event);
-      });
-      avatar.on(StreamingEvents.USER_END_MESSAGE, (event) => {
-        console.log(">>>>> User end message:", event);
-      });
-      avatar.on(StreamingEvents.USER_TALKING_MESSAGE, (event) => {
-        console.log(">>>>> User talking message:", event);
-      });
-      avatar.on(StreamingEvents.AVATAR_TALKING_MESSAGE, (event) => {
-        console.log(">>>>> Avatar talking message:", event);
-      });
-      avatar.on(StreamingEvents.AVATAR_END_MESSAGE, (event) => {
-        console.log(">>>>> Avatar end message:", event);
-      });
-
-     // Добавляем часовой таймаут в конфиг
-const extendedConfig = {
-  ...config,
-  activityIdleTimeout: 3600 // 1 час максимум
-};
-
-await startAvatar(extendedConfig);
-
-      // Поддержание сессии активной каждые 5 минут
-const keepAliveInterval = setInterval(() => {
-  if (avatar && avatar.keepAlive) {
-    avatar.keepAlive();
-  }
-}, 300000); // 5 минут
-
-// Сохраняем интервал для очистки
-(window as any).keepAliveInterval = keepAliveInterval;
-      
-      if (isVoiceChat) {
-        await startVoiceChat();
-      }
-    } catch (error) {
-      console.error("Error starting avatar session:", error);
-    }
-  });
-
-  useUnmount(() => {
-      // Очищаем keepAlive интервал
-  if ((window as any).keepAliveInterval) {
-    clearInterval((window as any).keepAliveInterval);
-    (window as any).keepAliveInterval = null;
-  }
-    stopAvatar();
-  });
-
-  useEffect(() => {
-    if (stream && mediaStream.current) {
-      mediaStream.current.srcObject = stream;
-      mediaStream.current.onloadedmetadata = () => {
-        mediaStream.current!.play();
-      };
-    }
-  }, [mediaStream, stream]);
-
-  return (
-    <div className="w-full flex flex-col gap-4">
-      <div className="flex flex-col rounded-xl bg-zinc-900 overflow-hidden">
-        <div className="relative w-full aspect-video overflow-hidden flex flex-col items-center justify-center">
-          {sessionState !== StreamingAvatarSessionState.INACTIVE ? (
-            <AvatarVideo ref={mediaStream} />
-          ) : (
-            <AvatarConfig config={config} onConfigChange={setConfig} />
-          )}
-        </div>
-        <div className="flex flex-col gap-3 items-center justify-center p-4 border-t border-zinc-700 w-full">
-          {sessionState === StreamingAvatarSessionState.CONNECTED ? (
-            <AvatarControls />
-          ) : sessionState === StreamingAvatarSessionState.INACTIVE ? (
-            <div className="flex flex-row gap-4">
-              <Button onClick={() => startSessionV2(true)}>
-                Start Voice Chat
-              </Button>
-              <Button onClick={() => startSessionV2(false)}>
-                Start Text Chat
-              </Button>
-            </div>
-          ) : (
-            <LoadingIcon />
-          )}
-        </div>
-      </div>
-      {sessionState === StreamingAvatarSessionState.CONNECTED && (
-        <MessageHistory />
-      )}
-    </div>
-  );
-}
-
-export default function InteractiveAvatarWrapper() {
-  return (
-    <StreamingAvatarProvider basePath={process.env.NEXT_PUBLIC_BASE_API_URL}>
-      <InteractiveAvatar />
-    </StreamingAvatarProvider>
-  );
-}
